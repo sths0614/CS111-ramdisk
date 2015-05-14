@@ -188,7 +188,9 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 			d->writeListPid = -1;
 		}
 		else{
-			d->len_readList --;
+		//printk("before wait :%d\n",(d->len_readList));
+	
+			
 			node* before = NULL;
 			node* cur = d->read_head;
 
@@ -197,10 +199,12 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 					if(before == NULL){
 						d->read_head = d->read_head->next;
 						kfree(cur);
+						(d->len_readList)--;
 						break;
 					}
 					before->next = cur->next;
 					kfree(cur);
+					(d->len_readList)--;
 					break;
 				}
 				before = cur;
@@ -257,7 +261,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 
 	// Set 'r' to the ioctl's return value: 0 on success, negative on error
 
-	unsigned int m_ticket;
+	unsigned m_ticket;
 
 
 
@@ -301,45 +305,56 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		// Your code here (instead of the next two lines).
 		
 
-		if(filp_writable){
+		if(filp_writable)
+		{
 			osp_spin_lock(&(d->mutex));
 			m_ticket = d->ticket_head;
-			d->ticket_head++;
+			(d->ticket_head)++;
 			node* cur_readnode = d->read_head;
 			int flag = 0;
 			while(cur_readnode != NULL){
 				if (cur_readnode->pid == current->pid){
 					flag = 1;
+					break;
 				} 
 				cur_readnode = cur_readnode->next;
 			}
+		//printk("Checked for readlist deadlocl\n");
 			if (d->writeListPid == current->pid || flag == 1){
 				osp_spin_unlock(&(d->mutex));
 				return -EDEADLK;
 			}
 			osp_spin_unlock(&(d->mutex));
-			if(wait_event_interruptable(d->blockq, m_ticket == d->ticket_tail && d->len_readList == 0 && d->len_writeListPid == 0)){
+//printk("before wait :%d, %d, %d , %d\n",m_ticket, d->ticket_tail,d->len_readList, d->len_writeListPid);
+			if(wait_event_interruptible(d->blockq, m_ticket == d->ticket_tail && d->len_readList == 0 && d->len_writeListPid == 0)){
 				if(m_ticket == d->ticket_tail){
-					int nextTicketTail = d->ticket_tail+1;
+//printk("in wait's if\n");
+					int nextTicketTail = (d->ticket_tail)+1;
 					while(isInExitList(d->exitList_head,nextTicketTail)){
 						nextTicketTail++;
 					}
+//printk("after wait's if while\n");
+//printk("nextticket writeable/kill:%d",nextTicketTail);
 					d->ticket_tail = nextTicketTail;
 				}
 				else{
+//printk("in wait's else\n");
 					ticketNode* newTicket = kmalloc(sizeof(ticketNode), GFP_ATOMIC);
 					newTicket->ticket_number = m_ticket;
 					newTicket->next = d->exitList_head;
 					d->exitList_head = newTicket;
 				}
+//printk("before wait's return\n");
 				return -ERESTARTSYS;
 			}
+//printk("exit wait event\n");
 			osp_spin_lock(&(d->mutex));
 			filp->f_flags |= F_OSPRD_LOCKED;
-			int nextTicketTail = d->ticket_tail+1;
+			int nextTicketTail = (d->ticket_tail)+1;
 			while(isInExitList(d->exitList_head,nextTicketTail)){
 				nextTicketTail++;
 			}
+//printk("nextticket writeable/normal:%d",nextTicketTail);
 			d->ticket_tail = nextTicketTail;
 
 			d->writeListPid = current->pid;
@@ -353,19 +368,20 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		else{
 			osp_spin_lock(&(d->mutex));
 			m_ticket = d->ticket_head;
-			d->ticket_head++;
+			(d->ticket_head)++;
 			if (d->writeListPid == current->pid){
 				osp_spin_unlock(&(d->mutex));
 				return -EDEADLK;
 			}
 			osp_spin_unlock(&(d->mutex));
 
-			if(wait_event_interruptable(d->blockq, m_ticket == d->ticket_tail && d->len_writeListPid == 0)){
+			if(wait_event_interruptible(d->blockq, m_ticket == d->ticket_tail && d->len_writeListPid == 0)){
 				if(m_ticket == d->ticket_tail){
-					int nextTicketTail = d->ticket_tail+1;
+					int nextTicketTail = (d->ticket_tail)+1;
 					while(isInExitList(d->exitList_head,nextTicketTail)){
 						nextTicketTail++;
 					}
+//printk("nextticket readable/kill:%d",nextTicketTail);
 					d->ticket_tail = nextTicketTail;
 				}
 				else{
@@ -376,19 +392,21 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 				}
 				return -ERESTARTSYS;
 			}
+
 			osp_spin_lock(&(d->mutex));
 			filp->f_flags |= F_OSPRD_LOCKED;
-			int nextTicketTail = d->ticket_tail+1;
+			int nextTicketTail = (d->ticket_tail)+1;
 			while(isInExitList(d->exitList_head,nextTicketTail)){
 				nextTicketTail++;
 			}
+//printk("nextticket readable/normal:%d",nextTicketTail);
 			d->ticket_tail = nextTicketTail;
 
 			node* newNode = kmalloc(sizeof(node), GFP_ATOMIC);
 			newNode->pid = current->pid;
 			newNode->next = d->read_head;
 			d->read_head = newNode;
-			d->len_readList++;
+			(d->len_readList)++;
 			osp_spin_unlock(&(d->mutex));
 		}
 	} else if (cmd == OSPRDIOCTRYACQUIRE) {
@@ -403,13 +421,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		// Your code here (instead of the next two lines).
 		if(filp_writable){
 			osp_spin_lock(&(d->mutex));
-			m_ticket = d->ticket_head;
-			d->ticket_head++;
+			//m_ticket = d->ticket_head;
+			//(d->ticket_head)++;
 			node* cur_readnode = d->read_head;
 			int flag = 0;
 			while(cur_readnode != NULL){
 				if (cur_readnode->pid == current->pid){
 					flag = 1;
+					break;
 				} 
 				cur_readnode = cur_readnode->next;
 			}
@@ -419,18 +438,18 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			}
 			osp_spin_unlock(&(d->mutex));
 
-			if (!(m_ticket == d->ticket_tail && d->len_readList == 0 && d->len_writeListPid == 0)){
+//printk ("d->ticket_tail=%d\n",d->ticket_tail);
+//printk ("m_ticket=%d\n",m_ticket);
+
+//printk ("writelistlen=%d\n",d->len_writeListPid);
+
+			if (!(d->len_readList == 0 && d->len_writeListPid == 0)){
+				//printk ("enter writable busy\n");
 				return -EBUSY;
 			}
 
 			osp_spin_lock(&(d->mutex));
 			filp->f_flags |= F_OSPRD_LOCKED;
-			int nextTicketTail = d->ticket_tail+1;
-			while(isInExitList(d->exitList_head,nextTicketTail)){
-				nextTicketTail++;
-			}
-			d->ticket_tail = nextTicketTail;
-
 			d->writeListPid = current->pid;
 			d->len_writeListPid = 1;
 			osp_spin_unlock(&(d->mutex));
@@ -441,30 +460,30 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		}
 		else{
 			osp_spin_lock(&(d->mutex));
-			m_ticket = d->ticket_head;
-			d->ticket_head++;
 			if (d->writeListPid == current->pid){
 				osp_spin_unlock(&(d->mutex));
 				return -EDEADLK;
 			}
 			osp_spin_unlock(&(d->mutex));
 
-			if(!(m_ticket == d->ticket_tail && d->len_writeListPid == 0)){
+//printk ("d->ticket_tail=%d\n",d->ticket_tail);
+//printk ("m_ticket=%d\n",m_ticket);
+
+//printk ("writelistlen=%d\n",d->len_writeListPid);
+
+
+			if(!(d->len_writeListPid == 0)){
+				//printk ("enter readable busy\n");
 				return -EBUSY;
 			}
 			osp_spin_lock(&(d->mutex));
 			filp->f_flags |= F_OSPRD_LOCKED;
-			int nextTicketTail = d->ticket_tail+1;
-			while(isInExitList(d->exitList_head,nextTicketTail)){
-				nextTicketTail++;
-			}
-			d->ticket_tail = nextTicketTail;
 
 			node* newNode = kmalloc(sizeof(node), GFP_ATOMIC);
 			newNode->pid = current->pid;
 			newNode->next = d->read_head;
 			d->read_head = newNode;
-			d->len_readList++;
+			(d->len_readList)++;
 			osp_spin_unlock(&(d->mutex));
 		}
 
@@ -478,6 +497,10 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		// you need, and return 0.
 
 		// Your code here (instead of the next line).
+		
+		if ((filp->f_flags & F_OSPRD_LOCKED) == 0)
+			return -EINVAL;		
+
 		osp_spin_lock(&(d->mutex));
 
 		if(filp_writable){
@@ -485,7 +508,6 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 			d->writeListPid = -1;
 		}
 		else{
-			d->len_readList --;
 			node* before = NULL;
 			node* cur = d->read_head;
 
@@ -494,10 +516,12 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 					if(before == NULL){
 						d->read_head = d->read_head->next;
 						kfree(cur);
+						(d->len_readList)--;
 						break;
 					}
 					before->next = cur->next;
 					kfree(cur);
+					(d->len_readList)--;
 					break;
 				}
 				before = cur;
